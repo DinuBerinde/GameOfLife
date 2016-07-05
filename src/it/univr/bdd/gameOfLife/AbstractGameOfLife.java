@@ -1,7 +1,14 @@
 package it.univr.bdd.gameOfLife;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import com.juliasoft.beedeedee.bdd.Assignment;
 import com.juliasoft.beedeedee.bdd.BDD;
@@ -12,16 +19,25 @@ public abstract class AbstractGameOfLife {
 	protected final BDD [][] board_p;
 	protected final int dimension;
 	private final int type;
+	private final int processors;
+	private final int endGenerations;
 	protected final Factory factory;
-	private BDD initialGeneration;
+	private ArrayList<BDD> generations = new ArrayList<>();
 
 
 	public AbstractGameOfLife(int dimension, int type){
 		this.type = type;
 		this.factory = Factory.mkResizingAndGarbageCollected(1000000, 100000);
 		this.dimension = dimension;
+		this.processors = Runtime.getRuntime().availableProcessors();
 		this.board = new BDD[this.dimension][this.dimension];
 		this.board_p = new BDD[this.dimension][this.dimension];
+
+		// 1 - Glider, 0 - Blinker
+		if(this.type == 1)
+			this.endGenerations = this.dimension*2 + 1;
+		else
+			this.endGenerations = 2;
 
 		buildVariables();
 	}
@@ -29,25 +45,26 @@ public abstract class AbstractGameOfLife {
 	public abstract BDD buildInitialGeneration();
 
 	public void begin(){
-		System.out.println("*********** " + (this.type == 1 ? " Glider " : " Blinker ") + " example ***************************");
+		long start = System.currentTimeMillis();
+		System.out.println("***************** " + (this.type == 1 ? " Glider " : " Blinker ") + " example ***************************");
 		
-		this.initialGeneration = buildInitialGeneration();
-		
-		BDD initial = this.initialGeneration.copy();
+		BDD initial = buildInitialGeneration();
+		buildGenerations(initial.copy());
 		BDD preState = build_X();
-		BDD transitions = buildTransitions();
-		Map<Integer, Integer> renaming = buildRenaming();		
+		Map<Integer, Integer> renaming = buildRenaming();
+		BDD transitions = build_T();
 		BDD reachableStates = reachableStates(initial, transitions, preState, renaming);
 
 		printSolution(reachableStates);
-		
-		this.initialGeneration.free();
+
 		initial.free();
 		preState.free();
 		transitions.free();
 		reachableStates.free(); 
-	
+
 		factory.done();
+		System.out.println("[*] Total time: " + (System.currentTimeMillis()-start));
+		System.out.println("***************************************************************" + "\n" + "\n");
 	}
 
 
@@ -61,7 +78,7 @@ public abstract class AbstractGameOfLife {
 		}		
 	}
 
-	
+
 	/**
 	 * Pre-state variables (variables before the transitions)
 	 */
@@ -76,7 +93,7 @@ public abstract class AbstractGameOfLife {
 
 		return res;
 	}
-	
+
 
 	/**
 	 * Post-state variables (variables after the transitions)
@@ -100,15 +117,15 @@ public abstract class AbstractGameOfLife {
 	 */
 	private BDD reachableStates(BDD i, BDD t, BDD x, Map<Integer, Integer> renaming){
 		System.out.println("\n" + "[*] Computing reachable states" + "\n");
-					
+
 		BDD result = this.factory.makeZero();
 		BDD rCopy = null;
-		
+
 		int counter = 1;
 		do{
-			
+
 			System.out.println(" - iteration K = " + counter++);
-			
+
 			if(rCopy != null)
 				rCopy.free();
 
@@ -117,7 +134,7 @@ public abstract class AbstractGameOfLife {
 			BDD and = t.and(result);			
 			BDD exist = and.exist(x);
 			and.free();
-			
+
 			BDD replace = exist.replace(renaming);
 			result = i.or(replace);
 
@@ -128,9 +145,10 @@ public abstract class AbstractGameOfLife {
 		rCopy.free();
 
 		System.out.println("\n" + "[*] Done computing reachable states" + "\n");
-		
+
 		return result;
 	}
+
 
 
 	/**
@@ -143,34 +161,90 @@ public abstract class AbstractGameOfLife {
 	 *
 	 * @return a BDD with all the transitions
 	 */
-	private BDD buildTransitions() {
-		BDD t = factory.makeZero();
-		BDD gen = this.initialGeneration;
-			
+	private BDD build_T() {
+		ExecutorService executorService = Executors.newCachedThreadPool();
+		List<Future<BDD>> tasks = new ArrayList<>(processors);
+
+		int scheduler = processors;
+		int work = endGenerations / processors;
+		int half = work;
+
+		if((endGenerations % processors) != 0)
+			scheduler--;
+
+		for (int i = 0; i < scheduler; i++){
+			tasks.add(executorService.submit(new AsyncTask(work - half, work)));	
+
+			work += half;
+		}
+
+		if((endGenerations % processors) != 0)
+			tasks.add(executorService.submit(new AsyncTask(work - half, work+1)));	
+		
+
+		BDD res = factory.makeZero();
+		for (int i = 0; i < processors; i++) {
+			try {
+
+				res.orWith(tasks.get(i).get());
+
+			} catch (InterruptedException | ExecutionException e) {
+				e.printStackTrace();
+			}			
+		}
+
+		executorService.shutdown();
+
+		return res;
+	}
+
+	/**
+	 * Build a the list of BDD's corresponding to all generations
+	 * @param initialGeneration the initial BDD generation
+	 */
+	private void buildGenerations(BDD initialGeneration){
+		BDD currentGeneration = initialGeneration;
 		int i = 0;
-		int endGenerations; // number of generations
 		
-		// 1 - Glider, 0 - Blinker
-		if(this.type == 1)
-			endGenerations = this.dimension*2 + 1;
-		else
-			endGenerations = 2;
-		
-		while(i++ < endGenerations){	
+		this.generations.add(currentGeneration.copy());
+	
+		while(i++ < endGenerations){
+
+			BDD nextGeneration = getNextGeneration(currentGeneration);
+			this.generations.add(nextGeneration);
 			
-			BDD transition = nextGeneration(gen);
-			t.orWith(transition.copy());
-			
-			BDD nextGeneration = getNextGeneration(gen);
-			
-			gen.free();
-			gen = nextGeneration;
+			currentGeneration.free();
+			currentGeneration = nextGeneration.copy();
+		}		
+	} 
+
+	private BDD buildTransitions(int start, int finish){
+		BDD t = factory.makeZero();
+
+		for (int i = start; i < finish; ++i){
+			BDD transition = nextGeneration(this.generations.get(i));
+			t.orWith(transition);
 		}
 
 		return t;
 	}
-
 	
+	
+	private final class AsyncTask implements Callable<BDD> {
+		private final int start;
+		private final int finish;
+
+		public AsyncTask(int start, int finish) {
+			this.start = start;
+			this.finish = finish;
+		}
+
+		@Override
+		public BDD call() throws Exception {
+			return buildTransitions(start, finish);
+		}
+	}
+
 
 	/**
 	 * The rules of the next generation. This is one transition.
@@ -193,11 +267,12 @@ public abstract class AbstractGameOfLife {
 		BDD res = this.factory.makeOne();
 		Assignment assignment = generation.anySat();
 
+
 		// be build the map/transition from board to board_p vars
 		for(int i = 0; i < this.dimension; i++)
 			for(int j = 0; j < this.dimension; j++){
 
-				
+
 				// it's a live cell, we remove it if we can
 				if(assignment.holds(this.board[i][j])){
 
@@ -230,19 +305,19 @@ public abstract class AbstractGameOfLife {
 						res.andWith(this.board[i][j].not()); 	// evaluate F the var in board
 						res.andWith(this.board_p[i][j].copy()); // evaluate T the var in board_p
 					}
-					
+
 					else
 						res.andWith(this.board[i][j].biimp(this.board_p[i][j]));   // vars equal
 
 				}
 			}
-		
-		
+
+
 		return res;
 	}
 
 
-	
+
 
 	/**
 	 * It returns the next generation based on the current generation
@@ -285,7 +360,7 @@ public abstract class AbstractGameOfLife {
 				}
 			}
 		}
-		
+
 		return res;
 	}
 
@@ -406,55 +481,16 @@ public abstract class AbstractGameOfLife {
 
 	private void printSolution(BDD reachableStates){
 		long solutions = reachableStates.satCount(this.dimension * this.dimension - 1);
-		
+
 		System.out.println("[*] Reachable states solutions: " + solutions);
 		System.out.println("[*] The game ends after " + (solutions-1) + ((solutions-1) == 1 ? " generation" : " generations") );
+		
+		if((solutions-1) == 1)
+			System.out.println("[*] This is a contradiction because the blinker should not die");
+		
 		System.out.println("[*] Reachable states algorithm always reaches a fix point");
-		System.out.println("*********************************************************" + "\n" + "\n");
 	}
-	
-	
-	
 
-	
-	
-	/** Utilities methods */
-	
-	/*
-	private void printAllSat(BDD bdd){
-		int pos = 1;
-		
-		for(Assignment as: bdd.allSat())
-			System.out.println(pos++ + ") " + as);	
-	}
-	
-	
-	private void printAnySat(BDD bdd){
-		System.out.println("Any Sat " + bdd.anySat());
-	}
-	
-	private void printBoard(){
-		System.out.println("Board ");
-		for(int i = 0; i < this.dimension; i++){
-			for(int j = 0; j < this.dimension; j++){
-				System.out.print(board[i][j].var() + " ");
-			}
-			
-			System.out.println();
-		}
-		
-		
-		System.out.println("\n" + "Board p");
-		for(int i = 0; i < this.dimension; i++){
-			for(int j = 0; j < this.dimension; j++){
-				System.out.print(board_p[i][j].var() + " ");
-			}
-			
-			System.out.println();
-		}
-		
-		System.out.println();
-	}
-	*/
+
 }
 
