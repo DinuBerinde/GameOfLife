@@ -152,12 +152,12 @@ public abstract class AbstractGameOfLife {
 
 
 	/**
-	 * Transitions of the model. A transition builds the next generation of cells.
+	 * Transitions that the system can perform. A transition builds the next generation of cells.
 	 * A transition is taken place on the current generation.
 	 * 
 	 * Idea: make transitions starting from the initial state (glider in the middle of the board),
 	 * until it reaches the end of the game (when all cells died), which is equivalent to saying that all variables are false.
-	 * During the cycle (while), we collect the current transition in OR with the others transitions.
+	 * During the computation, we perform the logical OR of the current transition with the others transitions.
 	 *
 	 * @return a BDD with all the transitions
 	 */
@@ -248,14 +248,16 @@ public abstract class AbstractGameOfLife {
 
 	/**
 	 * The rules of the next generation. This is one transition.
-	 * A transition is a map from the board board vars to the board board_p vars, and all represented by a BDD.
+	 * A transition is a map from the BDD's of the matrix board to the BDD's of the matrix board_p,
+	 * and all represented by a single resulting BDD.
 	 * 
 	 * Idea: we build the next generation based on the current generation represented by the argument BDD. 
 	 * We iterate over the board matrix and when we encounter a live cell (when the assignment of the current variable holds),
 	 * we try the rules: solitude, overpopulation, border.
 	 * 
 	 * Example: If the solitude rule holds at the cell (i,j)(the live cell is isolated, and should be removed), 
-	 * the resulting BDD add's in AND the board[i][j] and board_p[i]j].not(), this represents a map/transition.
+	 * the resulting BDD computes the logical AND with the BDD of board[i][j] and with the BDD of board_p[i]j].not(),
+	 * this represents a map/transition.
 	 * The same has to be done for all rules according to the case.
 	 * 
 	 * When we encounter a dead cell (when the assignment of the current variable doesn't hold), we try populating the cell.
@@ -463,7 +465,7 @@ public abstract class AbstractGameOfLife {
 
 	/**
 	 * Check if a neighbor (live cell) is placed at (x,y) in the board matrix.
-	 * To do that we check if the assignment assignment hold the variable at (x,y). 
+	 * To do that we check if the assignment assignment holds the BBD at (x,y). 
 	 * 
 	 * @param x position of the cell at x
 	 * @param y position of the cell at y
@@ -483,10 +485,13 @@ public abstract class AbstractGameOfLife {
 		long solutions = reachableStates.satCount(this.dimension * this.dimension - 1);
 
 		System.out.println("[*] Reachable states solutions: " + solutions);
-		System.out.println("[*] The game ends after " + (solutions-1) + ((solutions-1) == 1 ? " generation" : " generations") );
+		System.out.println("[*] The game ends after " + solutions + " generations/transitions");
 		
-		if((solutions-1) == 1)
+		if((solutions-1) == 1){
 			System.out.println("[*] This is a contradiction because the blinker should not die");
+			System.out.println("[*] The system doesn't satisfy P");			
+		}else
+			System.out.println("[*] The system satisfies P");
 		
 		System.out.println("[*] Reachable states algorithm always reaches a fix point");
 	}
