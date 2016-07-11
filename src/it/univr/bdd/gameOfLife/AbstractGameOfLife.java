@@ -479,20 +479,61 @@ public abstract class AbstractGameOfLife {
 
 		return false;
 	}
+	
+	
+	/**
+	 * It builds a BDD representing the end of the game. The BDD will be the following predicate:
+	 * P = (not X11) ^ (not X12) ^ ... ^ (not Xij), where X is the BDD of the cell at (i,j)
+	 * 
+	 * @return a BDD representing the end of the game.
+	 */
+	private BDD buildEndGame(){
+		BDD res = factory.makeOne();
+
+		for(int i = 0; i < this.dimension; i++){
+			for(int j = 0; j < this.dimension; j++){
+				res.andWith(board[i][j].not());
+			}
+		}
+		
+		return res;
+	}
+	
+	/**
+	 * We try to see if we can find a counter example.
+	 * We build a BDD which is the logical AND between the reachable states BDD and the BDD representing
+	 * the end of the game. Then we check the sat count number to see if we can find a satisfying assignment.
+	 * 
+	 * If the number is 0, this means that we couldn't find any satisfying assignment, hence we found that the reachable states
+	 * BDD doesn't contains an assignment representing the end of the game, hence we found a counter example,
+	 * which means that the game doesn't end. 
+	 * 
+	 * If the number is 1, we found a satisfying assignment, hence we found that the reachable states BDD contains an assignment
+	 * representing the end of the game.
+	 * 
+	 * @param reachableStates the BDD of the reachable states 
+	 * @return the number of sat assignments of the counter example BDD
+	 */
+	private boolean tryCounterExample(BDD reachableStates){
+		BDD counterExample = reachableStates.andWith(buildEndGame());
+		
+		return counterExample.satCount(this.dimension * this.dimension - 1) == 0 ? true : false;
+	}
 
 
 	private void printSolution(BDD reachableStates){
 		long solutions = reachableStates.satCount(this.dimension * this.dimension - 1);
-
+		
+		// we found a counter example
+		if(tryCounterExample(reachableStates))
+			System.out.println("[*] The system doesn't satisfy the properties, the game doesn't end because "
+					+ "it doesn't reach the final state");
+		else
+			System.out.println("[*] The system satisfies the properties, the game ends because it reaches the final state");
+		
+	
 		System.out.println("[*] Reachable states solutions: " + solutions);
-		System.out.println("[*] The game ends after " + solutions + " generations/transitions");
-		
-		if((solutions-1) == 1){
-			System.out.println("[*] This is a contradiction because the blinker should not die");
-			System.out.println("[*] The system doesn't satisfy P");			
-		}else
-			System.out.println("[*] The system satisfies P");
-		
+		System.out.println("[*] The game ends after " + solutions + " generations/transitions");		
 		System.out.println("[*] Reachable states algorithm always reaches a fix point");
 	}
 
